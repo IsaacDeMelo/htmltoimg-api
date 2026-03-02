@@ -4,7 +4,13 @@ FROM node:20-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     ca-certificates \
+  fontconfig \
     fonts-liberation \
+  fonts-dejavu-core \
+  fonts-freefont-ttf \
+  fonts-noto-core \
+  fonts-noto-cjk \
+  fonts-noto-color-emoji \
     libasound2 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \

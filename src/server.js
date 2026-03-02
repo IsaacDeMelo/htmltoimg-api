@@ -3,6 +3,7 @@ const puppeteer = require('puppeteer-core');
 
 const PORT = Number(process.env.PORT || 3000);
 const JSON_LIMIT = process.env.JSON_LIMIT || '15mb';
+const BLOCK_REMOTE_FONTS = String(process.env.BLOCK_REMOTE_FONTS || '').toLowerCase() === 'true';
 
 const app = express();
 app.use(express.json({ limit: JSON_LIMIT }));
@@ -33,7 +34,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.post('/render', async (req, res) => {
-  const { html, width, height, selector } = req.body || {};
+  const { html, width, height, selector, baseUrl, waitUntil, timeoutMs } = req.body || {};
 
   if (typeof html !== 'string' || !html.trim()) {
     return res.status(400).json({ error: 'html obrigatório' });
@@ -42,9 +43,21 @@ app.post('/render', async (req, res) => {
   const w = Number(width || 720);
   const h = Number(height || 1280);
   const sel = typeof selector === 'string' && selector.trim() ? selector.trim() : '#rg-card';
+  const navigationWaitUntil =
+    waitUntil === 'load' || waitUntil === 'networkidle0' || waitUntil === 'networkidle2' || waitUntil === 'domcontentloaded'
+      ? waitUntil
+      : 'networkidle0';
+  const setContentTimeout = Number(timeoutMs || 45000);
+  const safeBaseUrl = typeof baseUrl === 'string' && /^https?:\/\//i.test(baseUrl.trim())
+    ? baseUrl.trim()
+    : null;
 
-  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0 || w > 2000 || h > 2000) {
-    return res.status(400).json({ error: 'width/height inválidos (1..2000)' });
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0 || w > 4000 || h > 4000) {
+    return res.status(400).json({ error: 'width/height inválidos (1..4000)' });
+  }
+
+  if (!Number.isFinite(setContentTimeout) || setContentTimeout < 1000 || setContentTimeout > 120000) {
+    return res.status(400).json({ error: 'timeoutMs inválido (1000..120000)' });
   }
 
   let page;
@@ -53,17 +66,25 @@ app.post('/render', async (req, res) => {
     page = await browser.newPage();
     await page.setViewport({ width: Math.floor(w), height: Math.floor(h), deviceScaleFactor: 2 });
 
-    // Ambientes sem internet: evita travar por Google Fonts.
-    await page.setRequestInterception(true);
-    page.on('request', (r) => {
-      const url = r.url();
-      if (url.startsWith('https://fonts.googleapis.com') || url.startsWith('https://fonts.gstatic.com')) {
-        return r.abort();
-      }
-      return r.continue();
-    });
+    // Por padrão, permite fontes externas (Google Fonts, CDN, etc).
+    // Opcionalmente bloqueia apenas domínios de fontes se BLOCK_REMOTE_FONTS=true.
+    if (BLOCK_REMOTE_FONTS) {
+      await page.setRequestInterception(true);
+      page.on('request', (r) => {
+        const url = r.url();
+        if (url.startsWith('https://fonts.googleapis.com') || url.startsWith('https://fonts.gstatic.com')) {
+          return r.abort();
+        }
+        return r.continue();
+      });
+    }
 
-    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    let htmlToRender = html;
+    if (safeBaseUrl && /<head[^>]*>/i.test(htmlToRender)) {
+      htmlToRender = htmlToRender.replace(/<head([^>]*)>/i, `<head$1><base href="${safeBaseUrl}">`);
+    }
+
+    await page.setContent(htmlToRender, { waitUntil: navigationWaitUntil, timeout: Math.floor(setContentTimeout) });
 
     // Seletor alvo
     try {
@@ -72,11 +93,11 @@ app.post('/render', async (req, res) => {
       // cai para screenshot da página toda
     }
 
-    // Pequena espera por fontes/layout final.
+    // Espera de fontes/layout final para aumentar chance de render correto.
     try {
       await Promise.race([
         page.evaluate(() => (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve()),
-        new Promise(resolve => setTimeout(resolve, 1500))
+        new Promise(resolve => setTimeout(resolve, 4000))
       ]);
     } catch {}
 
