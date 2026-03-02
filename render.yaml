@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: htmltoimg-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: JSON_LIMIT
+        value: 50mb
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: /usr/bin/google-chrome-stable
+      - key: BLOCK_REMOTE_FONTS
+        value: false

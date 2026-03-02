@@ -40,6 +40,53 @@ Body (JSON):
 
 ## Deploy no Render (Docker)
 
-A pasta já inclui Dockerfile. No Render, crie um Web Service do tipo Docker apontando para este diretório.
+### Método 1: Usando Blueprint (Recomendado)
 
-Depois, no bot, configure RG_RENDER_API_URL com a URL pública do Render (ex.: https://seu-servico.onrender.com).
+1. Faça push deste repositório para o GitHub
+2. Acesse [Render Dashboard](https://dashboard.render.com/)
+3. Clique em "New +" → "Blueprint"
+4. Conecte seu repositório GitHub
+5. O Render detectará automaticamente o `render.yaml` e configurará tudo
+
+### Método 2: Manual
+
+1. Faça push deste repositório para o GitHub
+2. No Render, crie um **Web Service**
+3. Conecte seu repositório
+4. Configure:
+   - **Environment**: Docker
+   - **Region**: Escolha a mais próxima
+   - **Plan**: Free (ou superior)
+   - **Health Check Path**: `/health`
+
+**Variáveis de ambiente (opcional)**:
+```
+JSON_LIMIT=50mb
+BLOCK_REMOTE_FONTS=false
+```
+
+### Testando o Deploy
+
+Após o deploy, teste com:
+```bash
+curl https://seu-app.onrender.com/health
+# Resposta esperada: {"ok":true}
+```
+
+Para testar render:
+```bash
+curl -X POST https://seu-app.onrender.com/render \
+  -H "Content-Type: application/json" \
+  -d '{
+    "html": "<!DOCTYPE html><html><head><style>#rg-card{background:#667eea;padding:40px;color:white;font-size:32px;font-weight:700;}</style></head><body><div id=\"rg-card\">Teste Bold</div></body></html>",
+    "width": 800,
+    "height": 400
+  }' \
+  --output test.png
+```
+
+### Observações Importantes
+
+- ⏱️ **Cold Start**: No plano gratuito, o serviço "hiberna" após inatividade. A primeira requisição pode demorar ~1 minuto
+- 💾 **Memória**: Puppeteer + Chrome consomem ~512MB. Recomenda-se plano Starter ($7/mês) ou superior para produção
+- 🔒 **HTTPS**: Render provê HTTPS automaticamente

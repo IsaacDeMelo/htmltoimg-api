@@ -13,7 +13,20 @@ let browserPromise;
 function resolveExecutablePath() {
   const envPath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH;
   if (envPath) return envPath;
-  // Debian/Ubuntu (Dockerfile instala chromium)
+  
+  // Tenta múltiplos caminhos comuns
+  const fs = require('fs');
+  const candidates = [
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+  ];
+  
+  for (const path of candidates) {
+    if (fs.existsSync(path)) return path;
+  }
+  
   return '/usr/bin/chromium';
 }
 

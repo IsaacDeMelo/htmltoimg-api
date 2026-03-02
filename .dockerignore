@@ -4,3 +4,10 @@ npm-debug.log
 .git
 .gitignore
 README.md
+EXAMPLES.md
+test-bold.html
+test-bold-render.sh
+.vscode
+.devcontainer
+*.log
+.env
