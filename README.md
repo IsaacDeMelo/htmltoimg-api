@@ -16,6 +16,8 @@ Body (JSON):
 - baseUrl (string, opcional, ex.: "https://meu-site.com/")
 - waitUntil (string, opcional: "domcontentloaded" | "load" | "networkidle0" | "networkidle2", default "networkidle0")
 - timeoutMs (number, opcional, default 45000)
+- forceFontSynthesis (boolean, opcional, default `true`)
+- fontWeights (number[], opcional, default `[400, 500, 600, 700]`)
 
 ## Variáveis de ambiente
 
@@ -29,6 +31,7 @@ Body (JSON):
 - A API agora permite fontes externas por padrão (Google Fonts/CDN).
 - Fontes embutidas no HTML (`@font-face` com URL remota ou `data:`) são suportadas.
 - Para HTML com assets relativos (CSS, fontes, imagens), envie `baseUrl` para resolver caminhos relativos.
+- Se uma família não tiver arquivo bold real, a API pode sintetizar negrito (`forceFontSynthesis`) para evitar texto "sem engrossar".
 
 ## Rodando local
 

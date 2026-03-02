@@ -34,7 +34,17 @@ app.get('/health', (_req, res) => {
 });
 
 app.post('/render', async (req, res) => {
-  const { html, width, height, selector, baseUrl, waitUntil, timeoutMs } = req.body || {};
+  const {
+    html,
+    width,
+    height,
+    selector,
+    baseUrl,
+    waitUntil,
+    timeoutMs,
+    forceFontSynthesis,
+    fontWeights
+  } = req.body || {};
 
   if (typeof html !== 'string' || !html.trim()) {
     return res.status(400).json({ error: 'html obrigatório' });
@@ -48,6 +58,11 @@ app.post('/render', async (req, res) => {
       ? waitUntil
       : 'networkidle0';
   const setContentTimeout = Number(timeoutMs || 45000);
+  const shouldForceFontSynthesis = forceFontSynthesis !== false;
+  const requestedWeights = Array.isArray(fontWeights)
+    ? fontWeights.map(v => Number(v)).filter(v => Number.isFinite(v) && v >= 100 && v <= 900)
+    : [400, 500, 600, 700];
+  const weightsToWarmup = [...new Set(requestedWeights)].slice(0, 8);
   const safeBaseUrl = typeof baseUrl === 'string' && /^https?:\/\//i.test(baseUrl.trim())
     ? baseUrl.trim()
     : null;
@@ -86,6 +101,17 @@ app.post('/render', async (req, res) => {
 
     await page.setContent(htmlToRender, { waitUntil: navigationWaitUntil, timeout: Math.floor(setContentTimeout) });
 
+    if (shouldForceFontSynthesis) {
+      await page.addStyleTag({
+        content: `
+          html, body, * {
+            font-synthesis: weight style small-caps !important;
+            font-synthesis-weight: auto !important;
+          }
+        `
+      });
+    }
+
     // Seletor alvo
     try {
       await page.waitForSelector(sel, { timeout: 5000 });
@@ -95,6 +121,36 @@ app.post('/render', async (req, res) => {
 
     // Espera de fontes/layout final para aumentar chance de render correto.
     try {
+      await page.evaluate(async ({ weights }) => {
+        if (!document.fonts || typeof window.getComputedStyle !== 'function') return;
+
+        const cleanFamily = (family) => {
+          if (!family) return '';
+          const first = String(family).split(',')[0].trim();
+          return first.replace(/^['"]|['"]$/g, '');
+        };
+
+        const families = new Set();
+        const all = document.querySelectorAll('*');
+
+        for (const node of all) {
+          const family = cleanFamily(window.getComputedStyle(node).fontFamily);
+          if (family) families.add(family);
+          if (families.size >= 30) break;
+        }
+
+        const loads = [];
+        for (const family of families) {
+          for (const weight of weights) {
+            loads.push(document.fonts.load(`${weight} 16px "${family}"`));
+          }
+        }
+
+        if (loads.length) {
+          await Promise.allSettled(loads);
+        }
+      }, { weights: weightsToWarmup });
+
       await Promise.race([
         page.evaluate(() => (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve()),
         new Promise(resolve => setTimeout(resolve, 4000))
