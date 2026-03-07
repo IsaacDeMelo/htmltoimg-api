@@ -11,6 +11,18 @@ app.use(express.json({ limit: JSON_LIMIT }));
 let browserPromise;
 let persistentPage = null;
 
+function buildDebugPayload(err, context) {
+  const message = String(err?.message || err || 'erro');
+  return {
+    message,
+    name: err?.name || 'Error',
+    stage: context?.stage || 'unknown',
+    details: context?.details || {},
+    stack: typeof err?.stack === 'string' ? err.stack.split('\n').slice(0, 8).join('\n') : undefined,
+    timestamp: new Date().toISOString()
+  };
+}
+
 
 function resolveExecutablePath() {
   const envPath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH;
@@ -512,6 +524,7 @@ async function getPersistentPage() {
 
 
 app.post('/render', async (req, res) => {
+  let stage = 'init';
   const {
     html,
     width,
@@ -555,8 +568,11 @@ app.post('/render', async (req, res) => {
 
   let page;
   try {
+    stage = 'get_browser';
     const browser = await getBrowser();
+    stage = 'new_page';
     page = await browser.newPage();
+    stage = 'set_viewport';
     await page.setViewport({ width: Math.floor(w), height: Math.floor(h), deviceScaleFactor: 2 });
 
     // Por padrão, permite fontes externas (Google Fonts, CDN, etc).
@@ -577,6 +593,7 @@ app.post('/render', async (req, res) => {
       htmlToRender = htmlToRender.replace(/<head([^>]*)>/i, `<head$1><base href="${safeBaseUrl}">`);
     }
 
+    stage = 'set_content';
     await page.setContent(htmlToRender, { waitUntil: navigationWaitUntil, timeout: Math.floor(setContentTimeout) });
 
     if (shouldForceFontSynthesis) {
@@ -635,14 +652,25 @@ app.post('/render', async (req, res) => {
       ]);
     } catch {}
 
+    stage = 'screenshot';
     const el = await page.$(sel);
     const buf = el ? await el.screenshot({ type: 'png' }) : await page.screenshot({ type: 'png' });
 
     res.setHeader('Content-Type', 'image/png');
     res.send(buf);
   } catch (err) {
-    const msg = String(err?.message || err || 'erro');
-    res.status(500).json({ error: 'render_failed', message: msg });
+    const debug = buildDebugPayload(err, {
+      stage,
+      details: {
+        route: '/render',
+        selector: sel,
+        width: w,
+        height: h,
+        waitUntil: navigationWaitUntil
+      }
+    });
+    console.error('[render_error]', debug);
+    res.status(500).json({ error: 'render_failed', message: debug.message, debug });
   } finally {
     if (page) {
       try { await page.close(); } catch {}
@@ -652,7 +680,9 @@ app.post('/render', async (req, res) => {
 
 // Rota otimizada para renderizar perfil (HTML pré-definido)
 app.post('/render-profile', async (req, res) => {
+  let stage = 'init';
   try {
+    stage = 'read_body';
     const data = req.body || {};
 
     // Validações mínimas
@@ -661,6 +691,7 @@ app.post('/render-profile', async (req, res) => {
     }
 
     // Defaults
+    stage = 'normalize_data';
     const profileData = {
       displayName: data.displayName || 'Desconhecido',
       rankTag: data.rankTag || 'Novato',
@@ -681,6 +712,7 @@ app.post('/render-profile', async (req, res) => {
       inventory: Array.isArray(data.inventory) ? data.inventory : [],
     };
 
+    stage = 'validate_dimensions';
     const width = Number(data.width || 420);
     const height = Number(data.height || 720);
 
@@ -689,15 +721,18 @@ app.post('/render-profile', async (req, res) => {
     }
 
     // Obtém página persistente (já com fontes carregadas)
+    stage = 'get_persistent_page';
     const page = await getPersistentPage();
 
     // Ajusta viewport se necessário
+    stage = 'set_viewport';
     const currentViewport = page.viewport();
     if (currentViewport.width !== Math.floor(width) || currentViewport.height !== Math.floor(height)) {
       await page.setViewport({ width: Math.floor(width), height: Math.floor(height), deviceScaleFactor: 2 });
     }
 
     // Atualiza dados na página via JavaScript (sem recarregar)
+    stage = 'update_dom';
     await page.evaluate((newData) => {
       // Função auxiliar para criar HTML de inventário
       const createInventoryHtml = (inventory) => {
@@ -842,17 +877,31 @@ app.post('/render-profile', async (req, res) => {
     }, profileData);
 
     // Pequena espera para DOM estabilizar (muito menor que antes!)
+    stage = 'stabilize_dom';
     await new Promise(resolve => setTimeout(resolve, 100));
 
     // Captura screenshot do card
+    stage = 'screenshot';
     const el = await page.$('#rg-card');
     const buf = el ? await el.screenshot({ type: 'png' }) : await page.screenshot({ type: 'png' });
 
     res.setHeader('Content-Type', 'image/png');
     res.send(buf);
   } catch (err) {
-    const msg = String(err?.message || err || 'erro ao renderizar perfil');
-    res.status(500).json({ error: 'render_profile_failed', message: msg });
+    const requestData = req.body || {};
+    const debug = buildDebugPayload(err, {
+      stage,
+      details: {
+        route: '/render-profile',
+        hasDisplayName: Boolean(requestData.displayName),
+        hasRankTag: Boolean(requestData.rankTag),
+        width: Number(requestData.width || 420),
+        height: Number(requestData.height || 720),
+        inventoryLength: Array.isArray(requestData.inventory) ? requestData.inventory.length : 0
+      }
+    });
+    console.error('[render_profile_error]', debug);
+    res.status(500).json({ error: 'render_profile_failed', message: debug.message, debug });
   }
 });
 
