@@ -94,6 +94,136 @@ curl -X POST http://localhost:3000/render \
   -o no-synthesis.png
 ```
 
+---
+
+# Exemplos de Uso - Rota Otimizada /render-profile
+
+## Exemplo 7: Card de Perfil Simples
+
+Renderiza um card de perfil Academy com dados básicos:
+
+```bash
+curl -X POST http://localhost:3000/render-profile \
+  -H "Content-Type: application/json" \
+  -d '{
+    "displayName": "Isaac",
+    "rankTag": "Lendário",
+    "width": 420,
+    "height": 720,
+    "roles": "Admin • Desenvolvedor",
+    "description": "Criador da API",
+    "groupCount": "15",
+    "messageCount": "1250",
+    "charisma": "99",
+    "prestige": "100",
+    "collection": "500",
+    "academyCash": "9999"
+  }' \
+  -o profile.png
+```
+
+## Exemplo 8: Card de Perfil com Avatar, Background e Cores
+
+```bash
+curl -X POST http://localhost:3000/render-profile \
+  -H "Content-Type: application/json" \
+  -d '{
+    "displayName": "João Silva",
+    "rankTag": "Mestre",
+    "avatarUrl": "https://res.cloudinary.com/dhdkifjdt/image/upload/v1772638834/avatar.jpg",
+    "backgroundUrl": "https://res.cloudinary.com/dhdkifjdt/image/upload/v1772716794/background.jpg",
+    "backgroundColor": "#667eea",
+    "isCanonized": true,
+    "roles": "Moderador • Curador",
+    "description": "Apaixonado por RPG",
+    "groupCount": "8",
+    "messageCount": "856",
+    "charisma": "85",
+    "prestige": "75",
+    "collection": "350",
+    "academyCash": "5500"
+  }' \
+  -o profile-custom.png
+```
+
+## Exemplo 9: Card de Perfil com Badge BOT
+
+```bash
+curl -X POST http://localhost:3000/render-profile \
+  -H "Content-Type: application/json" \
+  -d '{
+    "displayName": "RG Bot",
+    "rankTag": "Sistema",
+    "isBot": true,
+    "roles": "Bot • Automação",
+    "description": "Sistema de automação da Academy",
+    "groupCount": "999",
+    "messageCount": "999999",
+    "charisma": "0",
+    "prestige": "0",
+    "collection": "0",
+    "academyCash": "0"
+  }' \
+  -o bot-profile.png
+```
+
+## Exemplo 10: Card de Perfil com Inventário
+
+```bash
+curl -X POST http://localhost:3000/render-profile \
+  -H "Content-Type: application/json" \
+  -d '{
+    "displayName": "Colecionador",
+    "rankTag": "Raro",
+    "roles": "Coletor",
+    "description": "Amante de raridades",
+    "groupCount": "12",
+    "messageCount": "2100",
+    "charisma": "70",
+    "prestige": "65",
+    "collection": "1200",
+    "academyCash": "15000",
+    "inventory": [
+      "https://res.cloudinary.com/dhdkifjdt/image/upload/v1771599125/item1.png",
+      "https://res.cloudinary.com/dhdkifjdt/image/upload/v1771599125/item2.png",
+      "https://res.cloudinary.com/dhdkifjdt/image/upload/v1771599125/item3.png"
+    ]
+  }' \
+  -o inventory-profile.png
+```
+
+## Exemplo 11: Card de Perfil com todas as opções
+
+```bash
+curl -X POST http://localhost:3000/render-profile \
+  -H "Content-Type: application/json" \
+  -d '{
+    "displayName": "Lendário Pro",
+    "rankTag": "Supremo",
+    "width": 420,
+    "height": 720,
+    "avatarUrl": "https://res.cloudinary.com/dhdkifjdt/image/upload/avatar.jpg",
+    "backgroundUrl": "https://res.cloudinary.com/dhdkifjdt/image/upload/background.jpg",
+    "backgroundColor": "#764ba2",
+    "isBot": false,
+    "isDev": true,
+    "isCanonized": true,
+    "roles": "Admin • Dev • Moderador • Curador",
+    "description": "Líder máximo da comunidade",
+    "groupCount": "50",
+    "messageCount": "10000",
+    "charisma": "100",
+    "prestige": "100",
+    "collection": "2000",
+    "academyCash": "999999",
+    "inventory": [
+      "https://res.cloudinary.com/dhdkifjdt/image/upload/item1.png",
+      "https://res.cloudinary.com/dhdkifjdt/image/upload/item2.png"
+    ]
+  }' \
+  -o full-profile.png
+```
+
 ## Parâmetros Disponíveis
 
 | Parâmetro | Tipo | Default | Descrição |

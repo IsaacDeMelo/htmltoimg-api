@@ -5,9 +5,10 @@ API simples para renderizar HTML em PNG usando Puppeteer.
 ## Rotas
 
 - GET /health -> { ok: true }
-- POST /render -> retorna image/png
+- POST /render -> retorna image/png (renderização genérica de HTML)
+- POST /render-profile -> retorna image/png (renderização otimizada de card de perfil)
 
-Body (JSON):
+### POST /render (Renderização Genérica)
 
 - html (string, obrigatório)
 - width (number, default 720)
@@ -19,7 +20,41 @@ Body (JSON):
 - forceFontSynthesis (boolean, opcional, default `true`)
 - fontWeights (number[], opcional, default `[400, 500, 600, 700]`)
 
-## Variáveis de ambiente
+### POST /render-profile (Renderização Otimizada - Perfil Academy)
+
+**Rota otimizada para renderizar card de perfil com HTML pré-definido.**
+
+Body (JSON):
+
+- displayName (string, obrigatório) - Nome do personagem
+- rankTag (string, obrigatório) - Título/rank (ex: "Lendário", "Mestre")
+- width (number, optional, default 420)
+- height (number, optional, default 720)
+- avatarUrl (string, opcional) - URL da imagem de avatar
+- realAvatarUrl (string, opcional) - Alias para avatarUrl
+- backgroundUrl (string, opcional) - URL da imagem de fundo
+- backgroundColor (string, opcional) - Cor de fundo em hex (ex: "#667eea")
+- isBot (boolean, opcional) - Exibe badge "BOT"
+- isDev (boolean, opcional) - Exibe badge "DEVS+"
+- isCanonized (boolean, opcional) - Adiciona borda dourada ao avatar
+- roles (string, opcional) - Papéis/funções (ex: "Admin • Moderador")
+- description (string, opcional) - Descrição do personagem
+- groupCount (string|number, opcional) - Número de grupos
+- messageCount (string|number, opcional) - Número de mensagens
+- charisma (string|number, opcional) - Valor de carisma
+- prestige (string|number, opcional) - Valor de prestígio
+- collection (string|number, opcional) - Valor de coleção
+- academyCash (string|number, opcional) - Dinheiro/moeda
+- inventory (string[], opcional) - Array com URLs de 18 itens do inventário
+
+**Vantagens:**
+- ✅ Sem necessidade de enviar HTML completo
+- ✅ Renderização mais rápida
+- ✅ HTML já otimizado e testado
+- ✅ Suporte completo a fontes Google Fonts
+- ✅ Síntese de bold automática
+
+
 
 - PORT: porta do servidor
 - PUPPETEER_EXECUTABLE_PATH (ou CHROME_PATH): caminho do Chromium/Chrome
