@@ -50,9 +50,15 @@ Body (JSON):
 **Vantagens:**
 - ✅ Sem necessidade de enviar HTML completo
 - ✅ Renderização mais rápida
+- ✅ **SUPER OTIMIZADO**: Página fica sempre renderizada, apenas atualiza dados via JavaScript
+- ✅ Fontes carregadas apenas uma vez na inicialização
 - ✅ HTML já otimizado e testado
 - ✅ Suporte completo a fontes Google Fonts
 - ✅ Síntese de bold automática
+
+**Performance:**
+- Primeira requisição: ~2-3s (carrega página + fontes)
+- Requisições seguintes: ~100-300ms (apenas atualiza dados + screenshot)
 
 
 

@@ -9,6 +9,8 @@ const app = express();
 app.use(express.json({ limit: JSON_LIMIT }));
 
 let browserPromise;
+let persistentPage = null;
+
 
 function resolveExecutablePath() {
   const envPath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH;
@@ -429,6 +431,85 @@ function buildRgPerfilHtmlV2(data) {
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
+// Inicializa página persistente com template base
+async function getPersistentPage() {
+  if (persistentPage) {
+    try {
+      // Testa se a página ainda está válida
+      await persistentPage.evaluate(() => true);
+      return persistentPage;
+    } catch {
+      persistentPage = null;
+    }
+  }
+
+  const browser = await getBrowser();
+  persistentPage = await browser.newPage();
+  await persistentPage.setViewport({ width: 420, height: 720, deviceScaleFactor: 2 });
+
+  if (BLOCK_REMOTE_FONTS) {
+    await persistentPage.setRequestInterception(true);
+    persistentPage.on('request', (r) => {
+      const url = r.url();
+      if (url.startsWith('https://fonts.googleapis.com') || url.startsWith('https://fonts.gstatic.com')) {
+        return r.abort();
+      }
+      return r.continue();
+    });
+  }
+
+  // Carrega template base com dados vazios
+  const baseHtml = buildRgPerfilHtmlV2({
+    displayName: 'Loading',
+    rankTag: 'Loading',
+    avatarUrl: '',
+    backgroundUrl: '',
+    backgroundColor: '',
+    isBot: false,
+    isDev: false,
+    isCanonized: false,
+    roles: '',
+    description: '',
+    groupCount: '0',
+    messageCount: '0',
+    charisma: '0',
+    prestige: '0',
+    collection: '0',
+    academyCash: '0',
+    inventory: []
+  });
+
+  await persistentPage.setContent(baseHtml, { waitUntil: 'networkidle0', timeout: 30000 });
+
+  // Força síntese de fontes
+  await persistentPage.addStyleTag({
+    content: `
+      html, body, * {
+        font-synthesis: weight style small-caps !important;
+        font-synthesis-weight: auto !important;
+      }
+    `
+  });
+
+  // Pré-carrega fontes
+  await persistentPage.evaluate(async () => {
+    if (!document.fonts) return;
+    const weights = [400, 500, 600, 700, 1000];
+    const families = ['Helvetica Neue', 'Helvetica', 'Arial', 'Yellowtail'];
+    const loads = [];
+    for (const family of families) {
+      for (const weight of weights) {
+        loads.push(document.fonts.load(`${weight} 16px "${family}"`).catch(() => {}));
+      }
+    }
+    await Promise.allSettled(loads);
+    if (document.fonts.ready) await document.fonts.ready;
+  });
+
+  console.log('✓ Página persistente inicializada e fontes carregadas');
+  return persistentPage;
+}
+
 
 app.post('/render', async (req, res) => {
   const {
@@ -571,114 +652,199 @@ app.post('/render', async (req, res) => {
 
 // Rota otimizada para renderizar perfil (HTML pré-definido)
 app.post('/render-profile', async (req, res) => {
-  const data = req.body || {};
-
-  // Validações mínimas
-  if (!data.displayName || !data.rankTag) {
-    return res.status(400).json({ error: 'displayName e rankTag obrigatórios' });
-  }
-
-  // Defaults
-  const profileData = {
-    displayName: data.displayName || 'Desconhecido',
-    rankTag: data.rankTag || 'Novato',
-    avatarUrl: data.avatarUrl || data.realAvatarUrl || '',
-    backgroundUrl: data.backgroundUrl || '',
-    backgroundColor: data.backgroundColor || '',
-    isBot: data.isBot || false,
-    isDev: data.isDev || false,
-    isCanonized: data.isCanonized || false,
-    roles: data.roles || '',
-    description: data.description || '',
-    groupCount: data.groupCount || '0',
-    messageCount: data.messageCount || '0',
-    charisma: data.charisma || '0',
-    prestige: data.prestige || '0',
-    collection: data.collection || '0',
-    academyCash: data.academyCash || '0',
-    inventory: Array.isArray(data.inventory) ? data.inventory : [],
-  };
-
-  const width = Number(data.width || 420);
-  const height = Number(data.height || 720);
-
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || width > 4000 || height > 4000) {
-    return res.status(400).json({ error: 'width/height inválidos (1..4000)' });
-  }
-
-  // Gera HTML baseado na função template
-  const html = buildRgPerfilHtmlV2(profileData);
-
-  let page;
   try {
-    const browser = await getBrowser();
-    page = await browser.newPage();
-    await page.setViewport({ width: Math.floor(width), height: Math.floor(height), deviceScaleFactor: 2 });
+    const data = req.body || {};
 
-    // Bloqueia fontes remotas se configurado
-    if (BLOCK_REMOTE_FONTS) {
-      await page.setRequestInterception(true);
-      page.on('request', (r) => {
-        const url = r.url();
-        if (url.startsWith('https://fonts.googleapis.com') || url.startsWith('https://fonts.gstatic.com')) {
-          return r.abort();
-        }
-        return r.continue();
-      });
+    // Validações mínimas
+    if (!data.displayName || !data.rankTag) {
+      return res.status(400).json({ error: 'displayName e rankTag obrigatórios' });
     }
 
-    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30000 });
+    // Defaults
+    const profileData = {
+      displayName: data.displayName || 'Desconhecido',
+      rankTag: data.rankTag || 'Novato',
+      avatarUrl: data.avatarUrl || data.realAvatarUrl || 'https://res.cloudinary.com/dhdkifjdt/image/upload/v1772638834/WhatsApp_Image_2026-03-04_at_12.37.26_nkes8y.jpg',
+      backgroundUrl: data.backgroundUrl || 'https://res.cloudinary.com/dhdkifjdt/image/upload/v1772716794/WhatsApp_Image_2026-03-04_at_15.12.40_p4wk79.jpg',
+      backgroundColor: data.backgroundColor || '',
+      isBot: data.isBot || false,
+      isDev: data.isDev || false,
+      isCanonized: data.isCanonized || false,
+      roles: data.roles || '',
+      description: data.description || '',
+      groupCount: data.groupCount || '0',
+      messageCount: data.messageCount || '0',
+      charisma: data.charisma || '0',
+      prestige: data.prestige || '0',
+      collection: data.collection || '0',
+      academyCash: data.academyCash || '0',
+      inventory: Array.isArray(data.inventory) ? data.inventory : [],
+    };
 
-    // Habilita síntese de fonte para garantir bold
-    await page.addStyleTag({
-      content: `
-        html, body, * {
-          font-synthesis: weight style small-caps !important;
-          font-synthesis-weight: auto !important;
+    const width = Number(data.width || 420);
+    const height = Number(data.height || 720);
+
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || width > 4000 || height > 4000) {
+      return res.status(400).json({ error: 'width/height inválidos (1..4000)' });
+    }
+
+    // Obtém página persistente (já com fontes carregadas)
+    const page = await getPersistentPage();
+
+    // Ajusta viewport se necessário
+    const currentViewport = page.viewport();
+    if (currentViewport.width !== Math.floor(width) || currentViewport.height !== Math.floor(height)) {
+      await page.setViewport({ width: Math.floor(width), height: Math.floor(height), deviceScaleFactor: 2 });
+    }
+
+    // Atualiza dados na página via JavaScript (sem recarregar)
+    await page.evaluate((newData) => {
+      // Função auxiliar para criar HTML de inventário
+      const createInventoryHtml = (inventory) => {
+        return (inventory || Array(18).fill('')).concat(Array(18)).slice(0, 18).map((url) => {
+          let style = '';
+          if (url) {
+            style = `background-image: url('${url}'); background-size: cover; background-position: center;`;
+          }
+          return `<div class="inv-slot" style="${style}"></div>`;
+        }).join('');
+      };
+
+      // Atualiza background da imagem de cabeçalho
+      const headerImage = document.querySelector('.header-image');
+      if (headerImage) {
+        headerImage.style.backgroundImage = `url('${newData.backgroundUrl}')`;
+      }
+
+      // Atualiza cor de fundo do container
+      const container = document.querySelector('.profile-container');
+      if (container && newData.backgroundColor) {
+        container.style.backgroundColor = newData.backgroundColor;
+      } else if (container) {
+        container.style.backgroundColor = '';
+      }
+
+      // Atualiza avatar
+      const avatar = document.querySelector('.avatar-circle');
+      if (avatar) {
+        avatar.style.backgroundImage = `url('${newData.avatarUrl}')`;
+        if (newData.isCanonized) {
+          avatar.classList.add('canonized');
+        } else {
+          avatar.classList.remove('canonized');
         }
-      `
-    });
+      }
 
-    // Espera fontes carreguem
-    try {
-      await page.evaluate(async () => {
-        if (!document.fonts || typeof window.getComputedStyle !== 'function') return;
+      // Atualiza rank badge
+      const rankBadge = document.querySelector('.rank-badge');
+      if (rankBadge) rankBadge.textContent = newData.rankTag;
 
-        const cleanFamily = (family) => {
-          if (!family) return '';
-          const first = String(family).split(',')[0].trim();
-          return first.replace(/^['"]|['"]$/g, '');
-        };
+      // Atualiza nome do personagem
+      const charNameP = document.querySelector('.char-name p');
+      if (charNameP) charNameP.textContent = newData.displayName;
 
-        const families = new Set();
-        const all = document.querySelectorAll('*');
-
-        for (const node of all) {
-          const family = cleanFamily(window.getComputedStyle(node).fontFamily);
-          if (family) families.add(family);
-          if (families.size >= 20) break;
-        }
-
-        const loads = [];
-        const weights = [400, 500, 600, 700];
-        for (const family of families) {
-          for (const weight of weights) {
-            loads.push(document.fonts.load(`${weight} 16px "${family}"`));
+      // Atualiza badge (BOT ou DEVS+)
+      let existingTag = document.querySelector('.tag-devs');
+      if (newData.isBot) {
+        if (existingTag) {
+          existingTag.textContent = 'BOT';
+        } else {
+          const charName = document.querySelector('.char-name');
+          if (charName) {
+            charName.insertAdjacentHTML('beforeend', '<span class="tag-devs">BOT</span>');
           }
         }
-
-        if (loads.length) {
-          await Promise.allSettled(loads);
+      } else if (newData.isDev) {
+        if (existingTag) {
+          existingTag.textContent = 'DEVS+';
+        } else {
+          const charName = document.querySelector('.char-name');
+          if (charName) {
+            charName.insertAdjacentHTML('beforeend', '<span class="tag-devs">DEVS+</span>');
+          }
         }
-      });
+      } else if (existingTag) {
+        existingTag.remove();
+      }
 
-      await Promise.race([
-        page.evaluate(() => (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve()),
-        new Promise(resolve => setTimeout(resolve, 3000))
-      ]);
-    } catch {}
+      // Atualiza roles
+      const rolePrimary = document.querySelector('.role-primary');
+      if (rolePrimary) rolePrimary.textContent = newData.roles;
 
-    // Captura o card de perfil
+      // Atualiza descrição
+      const roleSecondary = document.querySelector('.role-secondary');
+      if (roleSecondary) roleSecondary.textContent = newData.description;
+
+      // Atualiza stats
+      const statVals = document.querySelectorAll('.stat-val');
+      if (statVals[0]) statVals[0].textContent = newData.groupCount;
+      if (statVals[1]) statVals[1].textContent = newData.messageCount;
+      if (statVals[2]) statVals[2].textContent = newData.charisma;
+      if (statVals[3]) statVals[3].textContent = newData.prestige;
+      if (statVals[4]) statVals[4].textContent = newData.collection;
+
+      // Atualiza dinheiro
+      const moneyValue = document.querySelector('.money-value');
+      if (moneyValue) moneyValue.textContent = newData.academyCash;
+
+      // Atualiza inventário
+      const inventoryGrid = document.querySelector('.inventory-grid');
+      if (inventoryGrid) {
+        inventoryGrid.innerHTML = createInventoryHtml(newData.inventory);
+      }
+
+      // Atualiza gradientes dinâmicos se houver backgroundColor
+      if (newData.backgroundColor) {
+        const hex = newData.backgroundColor.replace('#', '');
+        const r = parseInt(hex.substr(0, 2), 16);
+        const g = parseInt(hex.substr(2, 2), 16);
+        const b = parseInt(hex.substr(4, 2), 16);
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        const isDarkBg = luminance <= 0.6;
+
+        // Remove style dinâmico antigo
+        const oldDynamic = document.getElementById('dynamic-gradients');
+        if (oldDynamic) oldDynamic.remove();
+
+        // Adiciona novo style dinâmico
+        const styleEl = document.createElement('style');
+        styleEl.id = 'dynamic-gradients';
+        styleEl.textContent = `
+          .header-image::after {
+            background: linear-gradient(to bottom, transparent 66%, rgba(${r},${g},${b},1) 85%, rgba(${r},${g},${b},1) 100%) !important;
+          }
+          .stat-val {
+            color: #ffffff !important;
+            text-shadow: 0 0 4px rgba(0,0,0,0.8) !important;
+          }
+          .char-name {
+            color: #ffffff !important;
+            text-shadow: 0 0 4px rgba(0,0,0,0.8) !important;
+          }
+          .role-secondary {
+            color: #dcdcdc !important;
+            text-shadow: 0 0 3px rgba(0,0,0,0.7) !important;
+          }
+          .divider {
+            background: ${isDarkBg ? 'var(--text-gold)' : '#8B7500'} !important;
+          }
+          .money-box {
+            background-color: ${isDarkBg ? 'var(--box-money)' : 'rgba(255, 200, 80, 0.08)'} !important;
+            border-color: ${isDarkBg ? '#5c4030' : 'rgba(139, 117, 0, 0.3)'} !important;
+          }
+          .inv-slot {
+            background-color: rgba(255, 200, 80, 0.1) !important;
+            border-color: rgba(255, 200, 80, 0.2) !important;
+          }
+        `;
+        document.head.appendChild(styleEl);
+      }
+    }, profileData);
+
+    // Pequena espera para DOM estabilizar (muito menor que antes!)
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Captura screenshot do card
     const el = await page.$('#rg-card');
     const buf = el ? await el.screenshot({ type: 'png' }) : await page.screenshot({ type: 'png' });
 
@@ -687,15 +853,15 @@ app.post('/render-profile', async (req, res) => {
   } catch (err) {
     const msg = String(err?.message || err || 'erro ao renderizar perfil');
     res.status(500).json({ error: 'render_profile_failed', message: msg });
-  } finally {
-    if (page) {
-      try { await page.close(); } catch {}
-    }
   }
 });
 
 async function shutdown() {
   try {
+    if (persistentPage) {
+      await persistentPage.close().catch(() => {});
+      persistentPage = null;
+    }
     const browser = await browserPromise;
     if (browser) await browser.close();
   } catch {}
