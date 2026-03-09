@@ -10,6 +10,7 @@ app.use(express.json({ limit: JSON_LIMIT }));
 
 let browserPromise;
 let persistentPage = null;
+let profileRenderQueue = Promise.resolve();
 
 function buildDebugPayload(err, context) {
   const message = String(err?.message || err || 'erro');
@@ -21,6 +22,30 @@ function buildDebugPayload(err, context) {
     stack: typeof err?.stack === 'string' ? err.stack.split('\n').slice(0, 8).join('\n') : undefined,
     timestamp: new Date().toISOString()
   };
+}
+
+function enqueueProfileRender(task) {
+  const run = profileRenderQueue.then(task, task);
+  profileRenderQueue = run.catch(() => {});
+  return run;
+}
+
+async function warmupPageFonts(page) {
+  await page.evaluate(async () => {
+    if (!document.fonts) return;
+    const weights = [400, 500, 600, 700, 1000];
+    const families = ['Helvetica Neue', 'Helvetica', 'Arial', 'Yellowtail'];
+    const loads = [];
+
+    for (const family of families) {
+      for (const weight of weights) {
+        loads.push(document.fonts.load(`${weight} 16px "${family}"`).catch(() => {}));
+      }
+    }
+
+    await Promise.allSettled(loads);
+    if (document.fonts.ready) await document.fonts.ready;
+  });
 }
 
 
@@ -504,19 +529,7 @@ async function getPersistentPage() {
   });
 
   // Pré-carrega fontes
-  await persistentPage.evaluate(async () => {
-    if (!document.fonts) return;
-    const weights = [400, 500, 600, 700, 1000];
-    const families = ['Helvetica Neue', 'Helvetica', 'Arial', 'Yellowtail'];
-    const loads = [];
-    for (const family of families) {
-      for (const weight of weights) {
-        loads.push(document.fonts.load(`${weight} 16px "${family}"`).catch(() => {}));
-      }
-    }
-    await Promise.allSettled(loads);
-    if (document.fonts.ready) await document.fonts.ready;
-  });
+  await warmupPageFonts(persistentPage);
 
   console.log('✓ Página persistente inicializada e fontes carregadas');
   return persistentPage;
@@ -720,170 +733,45 @@ app.post('/render-profile', async (req, res) => {
       return res.status(400).json({ error: 'width/height inválidos (1..4000)' });
     }
 
-    // Obtém página persistente (já com fontes carregadas)
-    stage = 'get_persistent_page';
-    const page = await getPersistentPage();
+    stage = 'build_html';
+    const html = buildRgPerfilHtmlV2(profileData);
 
-    // Ajusta viewport se necessário
-    stage = 'set_viewport';
-    const currentViewport = page.viewport();
-    if (currentViewport.width !== Math.floor(width) || currentViewport.height !== Math.floor(height)) {
-      await page.setViewport({ width: Math.floor(width), height: Math.floor(height), deviceScaleFactor: 2 });
-    }
+    const buf = await enqueueProfileRender(async () => {
+      // Obtém página persistente (já com browser reutilizado)
+      stage = 'get_persistent_page';
+      const page = await getPersistentPage();
 
-    // Atualiza dados na página via JavaScript (sem recarregar)
-    stage = 'update_dom';
-    await page.evaluate((newData) => {
-      // Função auxiliar para criar HTML de inventário
-      const createInventoryHtml = (inventory) => {
-        return (inventory || Array(18).fill('')).concat(Array(18)).slice(0, 18).map((url) => {
-          let style = '';
-          if (url) {
-            style = `background-image: url('${url}'); background-size: cover; background-position: center;`;
-          }
-          return `<div class="inv-slot" style="${style}"></div>`;
-        }).join('');
-      };
-
-      // Atualiza background da imagem de cabeçalho
-      const headerImage = document.querySelector('.header-image');
-      if (headerImage) {
-        headerImage.style.backgroundImage = `url('${newData.backgroundUrl}')`;
+      // Ajusta viewport se necessário
+      stage = 'set_viewport';
+      const currentViewport = page.viewport();
+      if (currentViewport.width !== Math.floor(width) || currentViewport.height !== Math.floor(height)) {
+        await page.setViewport({ width: Math.floor(width), height: Math.floor(height), deviceScaleFactor: 2 });
       }
 
-      // Atualiza cor de fundo do container
-      const container = document.querySelector('.profile-container');
-      if (container && newData.backgroundColor) {
-        container.style.backgroundColor = newData.backgroundColor;
-      } else if (container) {
-        container.style.backgroundColor = '';
-      }
+      // Reescreve o template inteiro para garantir estado limpo a cada request.
+      stage = 'set_content';
+      await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30000 });
 
-      // Atualiza avatar
-      const avatar = document.querySelector('.avatar-circle');
-      if (avatar) {
-        avatar.style.backgroundImage = `url('${newData.avatarUrl}')`;
-        if (newData.isCanonized) {
-          avatar.classList.add('canonized');
-        } else {
-          avatar.classList.remove('canonized');
-        }
-      }
-
-      // Atualiza rank badge
-      const rankBadge = document.querySelector('.rank-badge');
-      if (rankBadge) rankBadge.textContent = newData.rankTag;
-
-      // Atualiza nome do personagem
-      const charNameP = document.querySelector('.char-name p');
-      if (charNameP) charNameP.textContent = newData.displayName;
-
-      // Atualiza badge (BOT ou DEVS+)
-      let existingTag = document.querySelector('.tag-devs');
-      if (newData.isBot) {
-        if (existingTag) {
-          existingTag.textContent = 'BOT';
-        } else {
-          const charName = document.querySelector('.char-name');
-          if (charName) {
-            charName.insertAdjacentHTML('beforeend', '<span class="tag-devs">BOT</span>');
+      stage = 'apply_font_synthesis';
+      await page.addStyleTag({
+        content: `
+          html, body, * {
+            font-synthesis: weight style small-caps !important;
+            font-synthesis-weight: auto !important;
           }
-        }
-      } else if (newData.isDev) {
-        if (existingTag) {
-          existingTag.textContent = 'DEVS+';
-        } else {
-          const charName = document.querySelector('.char-name');
-          if (charName) {
-            charName.insertAdjacentHTML('beforeend', '<span class="tag-devs">DEVS+</span>');
-          }
-        }
-      } else if (existingTag) {
-        existingTag.remove();
-      }
+        `
+      });
 
-      // Atualiza roles
-      const rolePrimary = document.querySelector('.role-primary');
-      if (rolePrimary) rolePrimary.textContent = newData.roles;
+      stage = 'wait_fonts';
+      await warmupPageFonts(page);
 
-      // Atualiza descrição
-      const roleSecondary = document.querySelector('.role-secondary');
-      if (roleSecondary) roleSecondary.textContent = newData.description;
+      stage = 'wait_selector';
+      await page.waitForSelector('#rg-card', { timeout: 5000 });
 
-      // Atualiza stats
-      const statVals = document.querySelectorAll('.stat-val');
-      if (statVals[0]) statVals[0].textContent = newData.groupCount;
-      if (statVals[1]) statVals[1].textContent = newData.messageCount;
-      if (statVals[2]) statVals[2].textContent = newData.charisma;
-      if (statVals[3]) statVals[3].textContent = newData.prestige;
-      if (statVals[4]) statVals[4].textContent = newData.collection;
-
-      // Atualiza dinheiro
-      const moneyValue = document.querySelector('.money-value');
-      if (moneyValue) moneyValue.textContent = newData.academyCash;
-
-      // Atualiza inventário
-      const inventoryGrid = document.querySelector('.inventory-grid');
-      if (inventoryGrid) {
-        inventoryGrid.innerHTML = createInventoryHtml(newData.inventory);
-      }
-
-      // Atualiza gradientes dinâmicos se houver backgroundColor
-      if (newData.backgroundColor) {
-        const hex = newData.backgroundColor.replace('#', '');
-        const r = parseInt(hex.substr(0, 2), 16);
-        const g = parseInt(hex.substr(2, 2), 16);
-        const b = parseInt(hex.substr(4, 2), 16);
-        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-        const isDarkBg = luminance <= 0.6;
-
-        // Remove style dinâmico antigo
-        const oldDynamic = document.getElementById('dynamic-gradients');
-        if (oldDynamic) oldDynamic.remove();
-
-        // Adiciona novo style dinâmico
-        const styleEl = document.createElement('style');
-        styleEl.id = 'dynamic-gradients';
-        styleEl.textContent = `
-          .header-image::after {
-            background: linear-gradient(to bottom, transparent 66%, rgba(${r},${g},${b},1) 85%, rgba(${r},${g},${b},1) 100%) !important;
-          }
-          .stat-val {
-            color: #ffffff !important;
-            text-shadow: 0 0 4px rgba(0,0,0,0.8) !important;
-          }
-          .char-name {
-            color: #ffffff !important;
-            text-shadow: 0 0 4px rgba(0,0,0,0.8) !important;
-          }
-          .role-secondary {
-            color: #dcdcdc !important;
-            text-shadow: 0 0 3px rgba(0,0,0,0.7) !important;
-          }
-          .divider {
-            background: ${isDarkBg ? 'var(--text-gold)' : '#8B7500'} !important;
-          }
-          .money-box {
-            background-color: ${isDarkBg ? 'var(--box-money)' : 'rgba(255, 200, 80, 0.08)'} !important;
-            border-color: ${isDarkBg ? '#5c4030' : 'rgba(139, 117, 0, 0.3)'} !important;
-          }
-          .inv-slot {
-            background-color: rgba(255, 200, 80, 0.1) !important;
-            border-color: rgba(255, 200, 80, 0.2) !important;
-          }
-        `;
-        document.head.appendChild(styleEl);
-      }
-    }, profileData);
-
-    // Pequena espera para DOM estabilizar (muito menor que antes!)
-    stage = 'stabilize_dom';
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    // Captura screenshot do card
-    stage = 'screenshot';
-    const el = await page.$('#rg-card');
-    const buf = el ? await el.screenshot({ type: 'png' }) : await page.screenshot({ type: 'png' });
+      stage = 'screenshot';
+      const el = await page.$('#rg-card');
+      return el ? await el.screenshot({ type: 'png' }) : await page.screenshot({ type: 'png' });
+    });
 
     res.setHeader('Content-Type', 'image/png');
     res.send(buf);
