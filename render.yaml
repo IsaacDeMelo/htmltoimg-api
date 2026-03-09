@@ -13,3 +13,13 @@ services:
         value: /usr/bin/google-chrome-stable
       - key: BLOCK_REMOTE_FONTS
         value: false
+      - key: ASSET_CACHE_TTL_MS
+        value: 300000
+      - key: ASSET_CACHE_MAX_BYTES
+        value: 12582912
+      - key: ASSET_CACHE_MAX_ITEMS
+        value: 80
+      - key: ASSET_CACHE_MAX_ENTRY_BYTES
+        value: 1048576
+      - key: REMOTE_FETCH_TIMEOUT_MS
+        value: 6000

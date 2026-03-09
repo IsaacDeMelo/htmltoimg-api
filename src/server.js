@@ -4,6 +4,11 @@ const puppeteer = require('puppeteer-core');
 const PORT = Number(process.env.PORT || 3000);
 const JSON_LIMIT = process.env.JSON_LIMIT || '15mb';
 const BLOCK_REMOTE_FONTS = String(process.env.BLOCK_REMOTE_FONTS || '').toLowerCase() === 'true';
+const ASSET_CACHE_TTL_MS = Number(process.env.ASSET_CACHE_TTL_MS || 10 * 60 * 1000);
+const ASSET_CACHE_MAX_BYTES = Number(process.env.ASSET_CACHE_MAX_BYTES || 20 * 1024 * 1024);
+const ASSET_CACHE_MAX_ITEMS = Number(process.env.ASSET_CACHE_MAX_ITEMS || 200);
+const ASSET_CACHE_MAX_ENTRY_BYTES = Number(process.env.ASSET_CACHE_MAX_ENTRY_BYTES || 2 * 1024 * 1024);
+const REMOTE_FETCH_TIMEOUT_MS = Number(process.env.REMOTE_FETCH_TIMEOUT_MS || 8000);
 
 const app = express();
 app.use(express.json({ limit: JSON_LIMIT }));
@@ -11,6 +16,9 @@ app.use(express.json({ limit: JSON_LIMIT }));
 let browserPromise;
 let persistentPage = null;
 let profileRenderQueue = Promise.resolve();
+const assetCache = new Map();
+const assetInflight = new Map();
+let assetCacheBytes = 0;
 
 function buildDebugPayload(err, context) {
   const message = String(err?.message || err || 'erro');
@@ -22,6 +30,135 @@ function buildDebugPayload(err, context) {
     stack: typeof err?.stack === 'string' ? err.stack.split('\n').slice(0, 8).join('\n') : undefined,
     timestamp: new Date().toISOString()
   };
+}
+
+function isCacheEntryExpired(entry) {
+  return !entry || entry.expiresAt <= Date.now();
+}
+
+function deleteCacheEntry(cache, key, bytesRefName) {
+  const entry = cache.get(key);
+  if (!entry) return;
+  cache.delete(key);
+
+  if (bytesRefName === 'asset') {
+    assetCacheBytes -= entry.size;
+  }
+}
+
+function pruneExpiredEntries(cache, bytesRefName) {
+  for (const [key, entry] of cache.entries()) {
+    if (isCacheEntryExpired(entry)) {
+      deleteCacheEntry(cache, key, bytesRefName);
+    }
+  }
+}
+
+function touchCacheEntry(cache, key, entry) {
+  cache.delete(key);
+  cache.set(key, entry);
+}
+
+function getFromCache(cache, key, bytesRefName) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (isCacheEntryExpired(entry)) {
+    deleteCacheEntry(cache, key, bytesRefName);
+    return null;
+  }
+
+  entry.lastAccessAt = Date.now();
+  touchCacheEntry(cache, key, entry);
+  return entry;
+}
+
+function enforceCacheLimits(cache, bytesRefName, maxBytes, maxItems) {
+  while (cache.size > maxItems) {
+    const oldestKey = cache.keys().next().value;
+    deleteCacheEntry(cache, oldestKey, bytesRefName);
+  }
+
+  while (assetCacheBytes > maxBytes && cache.size > 0) {
+    const oldestKey = cache.keys().next().value;
+    deleteCacheEntry(cache, oldestKey, bytesRefName);
+  }
+}
+
+function setInCache(cache, key, entry, bytesRefName, maxBytes, maxItems) {
+  pruneExpiredEntries(cache, bytesRefName);
+
+  if (cache.has(key)) {
+    deleteCacheEntry(cache, key, bytesRefName);
+  }
+
+  cache.set(key, entry);
+  if (bytesRefName === 'asset') {
+    assetCacheBytes += entry.size;
+  }
+
+  enforceCacheLimits(cache, bytesRefName, maxBytes, maxItems);
+}
+
+async function fetchRemoteAsset(url) {
+  const cached = getFromCache(assetCache, url, 'asset');
+  if (cached) return cached;
+
+  if (assetInflight.has(url)) {
+    return assetInflight.get(url);
+  }
+
+  const pending = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REMOTE_FETCH_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'htmltoimg-api/1.0'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`asset_fetch_failed:${response.status}`);
+      }
+
+      const contentType = response.headers.get('content-type') || 'application/octet-stream';
+      if (!contentType.startsWith('image/')) {
+        throw new Error(`asset_invalid_content_type:${contentType}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      if (!buffer.length || buffer.length > ASSET_CACHE_MAX_ENTRY_BYTES) {
+        return {
+          buffer,
+          contentType,
+          size: buffer.length,
+          expiresAt: Date.now() + ASSET_CACHE_TTL_MS,
+          cacheable: false
+        };
+      }
+
+      const entry = {
+        buffer,
+        contentType,
+        size: buffer.length,
+        expiresAt: Date.now() + ASSET_CACHE_TTL_MS,
+        lastAccessAt: Date.now(),
+        cacheable: true
+      };
+
+      setInCache(assetCache, url, entry, 'asset', ASSET_CACHE_MAX_BYTES, ASSET_CACHE_MAX_ITEMS);
+      return entry;
+    } finally {
+      clearTimeout(timeout);
+      assetInflight.delete(url);
+    }
+  })();
+
+  assetInflight.set(url, pending);
+  return pending;
 }
 
 function enqueueProfileRender(task) {
@@ -46,6 +183,83 @@ async function warmupPageFonts(page) {
     await Promise.allSettled(loads);
     if (document.fonts.ready) await document.fonts.ready;
   });
+}
+
+async function waitForProfileAssets(page, timeoutMs = 8000) {
+  await page.evaluate(async (timeout) => {
+    const backgroundImageUrls = new Set();
+    const urlRegex = /url\((['"]?)(.*?)\1\)/g;
+
+    const collectUrls = (value) => {
+      if (!value || value === 'none') return;
+      for (const match of value.matchAll(urlRegex)) {
+        if (match[2]) backgroundImageUrls.add(match[2]);
+      }
+    };
+
+    for (const node of document.querySelectorAll('*')) {
+      const inlineStyle = node.getAttribute('style') || '';
+      collectUrls(inlineStyle);
+      collectUrls(window.getComputedStyle(node).backgroundImage);
+    }
+
+    const imagePromises = [];
+
+    for (const img of document.images) {
+      if (img.complete) continue;
+      imagePromises.push(new Promise((resolve) => {
+        const done = () => resolve();
+        img.addEventListener('load', done, { once: true });
+        img.addEventListener('error', done, { once: true });
+      }));
+    }
+
+    for (const url of backgroundImageUrls) {
+      imagePromises.push(new Promise((resolve) => {
+        const image = new Image();
+        image.onload = () => resolve();
+        image.onerror = () => resolve();
+        image.src = url;
+      }));
+    }
+
+    if (!imagePromises.length) return;
+
+    await Promise.race([
+      Promise.allSettled(imagePromises),
+      new Promise((resolve) => setTimeout(resolve, timeout))
+    ]);
+  }, timeoutMs);
+}
+
+async function handlePersistentPageRequest(request) {
+  const url = request.url();
+
+  if (BLOCK_REMOTE_FONTS && (url.startsWith('https://fonts.googleapis.com') || url.startsWith('https://fonts.gstatic.com'))) {
+    return request.abort();
+  }
+
+  if (request.resourceType() !== 'image' || !/^https?:\/\//i.test(url)) {
+    return request.continue();
+  }
+
+  try {
+    const asset = await fetchRemoteAsset(url);
+    return request.respond({
+      status: 200,
+      contentType: asset.contentType,
+      body: asset.buffer,
+      headers: {
+        'Cache-Control': 'public, max-age=600'
+      }
+    });
+  } catch (err) {
+    console.error('[asset_cache_error]', buildDebugPayload(err, {
+      stage: 'asset_intercept',
+      details: { url }
+    }));
+    return request.continue();
+  }
 }
 
 
@@ -484,16 +698,8 @@ async function getPersistentPage() {
   persistentPage = await browser.newPage();
   await persistentPage.setViewport({ width: 420, height: 720, deviceScaleFactor: 2 });
 
-  if (BLOCK_REMOTE_FONTS) {
-    await persistentPage.setRequestInterception(true);
-    persistentPage.on('request', (r) => {
-      const url = r.url();
-      if (url.startsWith('https://fonts.googleapis.com') || url.startsWith('https://fonts.gstatic.com')) {
-        return r.abort();
-      }
-      return r.continue();
-    });
-  }
+  await persistentPage.setRequestInterception(true);
+  persistentPage.on('request', handlePersistentPageRequest);
 
   // Carrega template base com dados vazios
   const baseHtml = buildRgPerfilHtmlV2({
@@ -516,7 +722,8 @@ async function getPersistentPage() {
     inventory: []
   });
 
-  await persistentPage.setContent(baseHtml, { waitUntil: 'networkidle0', timeout: 30000 });
+  await persistentPage.setContent(baseHtml, { waitUntil: 'domcontentloaded', timeout: 10000 });
+  await persistentPage.waitForSelector('#rg-card', { timeout: 5000 });
 
   // Força síntese de fontes
   await persistentPage.addStyleTag({
@@ -530,6 +737,7 @@ async function getPersistentPage() {
 
   // Pré-carrega fontes
   await warmupPageFonts(persistentPage);
+  await waitForProfileAssets(persistentPage, 8000);
 
   console.log('✓ Página persistente inicializada e fontes carregadas');
   return persistentPage;
@@ -750,7 +958,10 @@ app.post('/render-profile', async (req, res) => {
 
       // Reescreve o template inteiro para garantir estado limpo a cada request.
       stage = 'set_content';
-      await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30000 });
+      await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 10000 });
+
+      stage = 'wait_selector';
+      await page.waitForSelector('#rg-card', { timeout: 5000 });
 
       stage = 'apply_font_synthesis';
       await page.addStyleTag({
@@ -765,8 +976,8 @@ app.post('/render-profile', async (req, res) => {
       stage = 'wait_fonts';
       await warmupPageFonts(page);
 
-      stage = 'wait_selector';
-      await page.waitForSelector('#rg-card', { timeout: 5000 });
+  stage = 'wait_assets';
+  await waitForProfileAssets(page, 8000);
 
       stage = 'screenshot';
       const el = await page.$('#rg-card');

@@ -60,12 +60,21 @@ Body (JSON):
 - Primeira requisição: ~2-3s (carrega página + fontes)
 - Requisições seguintes: ~100-300ms (apenas atualiza dados + screenshot)
 
+**Cache em memória:**
+- Imagens remotas (avatar, background, inventário) podem ser reutilizadas da RAM por tempo limitado
+- O PNG final nao fica em cache, porque o perfil muda o tempo todo
+
 
 
 - PORT: porta do servidor
 - PUPPETEER_EXECUTABLE_PATH (ou CHROME_PATH): caminho do Chromium/Chrome
 - JSON_LIMIT: limite do body JSON (ex.: 30mb)
 - BLOCK_REMOTE_FONTS: se "true", bloqueia Google Fonts (default: false)
+- ASSET_CACHE_TTL_MS: tempo de vida do cache de imagens remotas em ms
+- ASSET_CACHE_MAX_BYTES: limite total em bytes do cache de imagens remotas
+- ASSET_CACHE_MAX_ITEMS: limite de entradas do cache de imagens remotas
+- ASSET_CACHE_MAX_ENTRY_BYTES: tamanho maximo por imagem remota armazenada em cache
+- REMOTE_FETCH_TIMEOUT_MS: timeout para baixar imagens remotas
 
 ## Fontes e compatibilidade de HTML
 
@@ -104,6 +113,11 @@ Body (JSON):
 ```
 JSON_LIMIT=50mb
 BLOCK_REMOTE_FONTS=false
+ASSET_CACHE_TTL_MS=300000
+ASSET_CACHE_MAX_BYTES=12582912
+ASSET_CACHE_MAX_ITEMS=80
+ASSET_CACHE_MAX_ENTRY_BYTES=1048576
+REMOTE_FETCH_TIMEOUT_MS=6000
 ```
 
 ### Testando o Deploy
